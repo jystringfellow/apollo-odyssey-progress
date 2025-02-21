@@ -1,226 +1,250 @@
 import { config } from './config';
 import { courses, certifications, getCoursesByTrack, getCertificationCourses } from './courses';
 import { createStyles } from './styles';
-import { CertificationName, CourseData, TrackName } from './types';
+import { GET_USER_PROGRESS } from './queries';
+import { createTemplates } from './templates';
+import { 
+  TrackName, 
+  CertificationName, 
+  CourseData, 
+  WidgetState,
+  CourseStatus 
+} from './types';
 
 export function createWidget(customConfig = {}) {
   const mergedConfig = { ...config, ...customConfig };
   const styles = createStyles(mergedConfig);
+  const templates = createTemplates(mergedConfig);
 
-  // Safely get stored track with fallback
-  let initialTrack: TrackName;
-  try {
-    const storedTrack = localStorage.getItem('apollo-odyssey-selected-track') as TrackName;
-    const defaultTrack = Object.keys(courses)[0] as TrackName;
-    initialTrack = storedTrack || defaultTrack;
-  } catch {
-    initialTrack = Object.keys(courses)[0] as TrackName;
+  const state: WidgetState = {
+    selectedTrack: getInitialTrack(),
+    userCourses: [],
+    isLoading: true,
+    error: undefined
+  };
+
+  const widget = initializeWidget();
+  const trackSelect = createTrackSelector();
+  setupWidgetEventHandlers(widget);
+  fetchUserProgress();
+
+  function getInitialTrack(): TrackName {
+    const availableTracks = getAvailableTracks();
+    const storedTrack = safelyGetStoredTrack();
+    return storedTrack && availableTracks.includes(storedTrack) 
+      ? storedTrack 
+      : availableTracks[0];
   }
 
-  // Remove existing widget if present
-  document.getElementById('apollo-odyssey-tracking-widget')?.remove();
+  function getAvailableTracks(): TrackName[] {
+    return [...new Set(Object.values(courses).flatMap(course => course.tracks))];
+  }
 
-  // Create widget container
-  const widget = document.createElement('div');
-  widget.id = 'apollo-odyssey-tracking-widget';
-  widget.style.cssText = styles.widget;
-  widget.innerHTML = '<strong style="font-size:16px;">🚀 Loading...</strong>';
-  document.body.appendChild(widget);
+  function safelyGetStoredTrack(): TrackName | null {
+    try {
+      return localStorage.getItem('apollo-odyssey-selected-track') as TrackName;
+    } catch {
+      return null;
+    }
+  }
 
-  // Create track selector dropdown
-  const trackSelect = document.createElement('select');
-  trackSelect.style.cssText = styles.dropdown;
-  
-  // Get unique tracks from courses
-  const tracks = [...new Set(Object.values(courses).flatMap(course => course.tracks))];
-  tracks.forEach(track => {
-    const option = document.createElement('option');
-    option.value = track;
-    option.textContent = track;
-    trackSelect.appendChild(option);
-  });
+  function initializeWidget(): HTMLElement {
+    removeExistingWidget();
+    const widget = createElement('div', {
+      id: 'apollo-odyssey-tracking-widget',
+      style: styles.widget,
+      innerHTML: templates.loading
+    });
+    document.body.appendChild(widget);
+    return widget;
+  }
 
-  // Add click handler to close widget when clicking outside
-  document.addEventListener('click', function(event) {
-    const widget = document.getElementById('apollo-odyssey-tracking-widget');
-    if (widget && !widget.contains(event.target as Node)) {
+  function createElement(tag: string, props: Record<string, string>): HTMLElement {
+    const element = document.createElement(tag);
+    Object.entries(props).forEach(([key, value]) => element[key] = value);
+    return element;
+  }
+
+  function removeExistingWidget() {
+    document.getElementById('apollo-odyssey-tracking-widget')?.remove();
+  }
+
+  function createTrackSelector(): HTMLSelectElement {
+    const select = createElement('select', { style: styles.dropdown }) as HTMLSelectElement;
+    getAvailableTracks().forEach(track => addTrackOption(select, track));
+    return select;
+  }
+
+  function addTrackOption(select: HTMLSelectElement, track: TrackName) {
+    const option = createElement('option', {
+      value: track,
+      textContent: track,
+      selected: track === state.selectedTrack ? 'true' : ''
+    });
+    select.appendChild(option);
+  }
+
+  function setupWidgetEventHandlers(widget: HTMLElement) {
+    document.addEventListener('click', handleOutsideClick, { capture: true });
+    widget.addEventListener('click', event => event.stopPropagation());
+    trackSelect.addEventListener('change', handleTrackChange);
+  }
+
+  function handleOutsideClick(event: MouseEvent) {
+    if (!widget.contains(event.target as Node)) {
       widget.remove();
     }
-  }, { capture: true });
+  }
 
-  // Prevent widget from closing when clicking inside it
-  widget.addEventListener('click', function(event) {
-    event.stopPropagation();
-  });
+  function handleTrackChange() {
+    state.selectedTrack = trackSelect.value as TrackName;
+    safelyStoreTrack(state.selectedTrack);
+    renderTrackCourses();
+  }
 
-  function renderCourseItem(courseId: string, courseMap: Map<string, CourseData>) {
-    const courseData = courseMap.get(courseId);
-    const courseInfo = courses[courseId];
-    let statusText: string, statusStyle: string;
+  function safelyStoreTrack(track: TrackName) {
+    try {
+      localStorage.setItem('apollo-odyssey-selected-track', track);
+    } catch {}
+  }
 
-    if (courseData) {
-      if (courseData.completedAt) {
-        statusText = `${mergedConfig.icons.completed} ${mergedConfig.text.completed}`;
-        statusStyle = styles.status.completed;
-      } else {
-        statusText = `${mergedConfig.icons.inProgress} In Progress`;
-        statusStyle = styles.status.inProgress;
-      }
-    } else {
-      statusText = `${mergedConfig.icons.notStarted} Not Started`;
-      statusStyle = styles.status.notStarted;
+  function getCourseStatus(courseData?: CourseData): CourseStatus {
+    if (!courseData) {
+      return {
+        text: `${mergedConfig.icons.notStarted} Not Started`,
+        style: styles.status.notStarted
+      };
     }
 
-    const courseUrl = `https://www.apollographql.com/tutorials/${courseId.replace('/v2', '')}`;
-
-    return `<li style="${styles.listItem}">
-      <a href="${courseUrl}" style="${styles.link}">
-        <strong>${courseInfo.title}</strong>
-      </a>: <span style="${statusStyle}">${statusText}</span>
-    </li>`;
+    return courseData.completedAt ? {
+      text: `${mergedConfig.icons.completed} ${mergedConfig.text.completed}`,
+      style: styles.status.completed
+    } : {
+      text: `${mergedConfig.icons.inProgress} In Progress`,
+      style: styles.status.inProgress
+    };
   }
 
-  function isCertificationCompleted(certCourses: string[], courseMap: Map<string, CourseData>) {
-    return certCourses.every(courseId => courseMap.get(courseId)?.completedAt);
+  function buildCourseUrl(courseId: string): string {
+    return `https://www.apollographql.com/tutorials/${courseId.replace('/v2', '')}`;
   }
 
-  function isTrackCompleted(trackCourses: string[], courseMap: Map<string, CourseData>) {
-    return trackCourses.every(courseId => courseMap.get(courseId)?.completedAt);
-  }
+  function renderTrackCourses() {
+    const trackCourses = getCoursesByTrack(state.selectedTrack);
+    const courseMap = new Map(state.userCourses.map(course => [course.id, course]));
+    
+    const certificationSections = renderCertificationSections(courseMap);
+    const remainingCoursesSection = renderRemainingCourses(trackCourses, courseMap);
+    
+    const isCompleted = areAllCoursesCompleted(trackCourses, courseMap);
+    const trackStatus = isCompleted 
+      ? `<span style="color: ${mergedConfig.colors.success}"> (${mergedConfig.text.trackCompleted})</span>`
+      : '';
 
-  function renderTrackCourses(trackName: TrackName, userCourses: CourseData[]) {
-    const trackCourses = getCoursesByTrack(trackName);
-    const courseMap = new Map(userCourses.map(course => [course.id, course]));
-    let html = '';
-
-    // Render certification groups first
-    Object.keys(certifications).forEach((certName) => {
-      const certCourses = getCertificationCourses(certName as CertificationName, trackName);
-      if (certCourses.length > 0) {
-        const cert = certifications[certName];
-        const isCompleted = isCertificationCompleted(certCourses, courseMap);
-        html += `
-          <div style="${styles.certGroup}${isCompleted ? styles.completed : ''}">
-            <h3 style="${styles.certHeader}">
-              ${isCompleted ? mergedConfig.icons.certification : mergedConfig.icons.certificationInProgress} ${cert.name}
-              ${isCompleted ? `<span style="color: ${mergedConfig.colors.success}"> (${mergedConfig.text.completed})</span>` : ''}
-            </h3>
-            ${cert.description ? `<p style="${styles.certDescription}">${cert.description}</p>` : ''}
-            <ul style="${styles.list}">
-              ${certCourses.map(courseId => renderCourseItem(courseId, courseMap)).join('')}
-            </ul>
-          </div>
-        `;
-      }
-    });
-
-    // Get all certification courses
-    const certCourses = new Set(Object.keys(certifications).flatMap(certName => 
-      getCertificationCourses(certName as CertificationName, trackName)
-    ));
-
-    // Filter out certified courses from remaining courses
-    const remainingCourses = trackCourses.filter(id => !certCourses.has(id));
-
-    if (remainingCourses.length > 0) {
-      html += `
-        <div style="${styles.group}">
-          <ul style="${styles.list}">
-            ${remainingCourses.map(courseId => renderCourseItem(courseId, courseMap)).join('')}
-          </ul>
-        </div>
-      `;
-    }
-
-    const isCompleted = isTrackCompleted(trackCourses, courseMap);
     widget.innerHTML = `
       <div style="${styles.container}${isCompleted ? styles.completed : ''}">
-        <strong style="${styles.header}">
-          ${isCompleted ? mergedConfig.icons.trackCompleted : mergedConfig.icons.track} Apollo Odyssey Course Progress
-          ${isCompleted ? `<span style="color: ${mergedConfig.colors.success}"> (${mergedConfig.text.trackCompleted})</span>` : ''}
-        </strong>
+        ${templates.trackHeader(isCompleted, trackStatus)}
         <div id="dropdown-container"></div>
-        ${html}
+        ${certificationSections}
+        ${remainingCoursesSection}
         <div style="${styles.buttonContainer}">
           <button id="test-close-btn" style="${styles.closeButton}">Close</button>
         </div>
       </div>
     `;
 
-    document.getElementById('dropdown-container')!.appendChild(trackSelect);
+    attachControls();
+  }
+
+  function areAllCoursesCompleted(courseIds: string[], courseMap: Map<string, CourseData>): boolean {
+    return courseIds.every(courseId => courseMap.get(courseId)?.completedAt);
+  }
+
+  function renderCertificationSections(courseMap: Map<string, CourseData>): string {
+    return Object.keys(certifications)
+      .map(certName => renderCertificationSection(certName as CertificationName, courseMap))
+      .filter(Boolean)
+      .join('');
+  }
+
+  function renderCertificationSection(certName: CertificationName, courseMap: Map<string, CourseData>): string {
+    const certCourses = getCertificationCourses(certName, state.selectedTrack);
+    if (!certCourses.length) return '';
+
+    const cert = certifications[certName];
+    const isCompleted = areAllCoursesCompleted(certCourses, courseMap);
+
+    return `
+      <div style="${styles.certGroup}${isCompleted ? styles.completed : ''}">
+        ${renderCertificationHeader(cert.name, isCompleted)}
+        ${cert.description ? `<p style="${styles.certDescription}">${cert.description}</p>` : ''}
+        <ul style="${styles.list}">
+          ${certCourses.map(courseId => renderCourseItem(courseId, courseMap)).join('')}
+        </ul>
+      </div>
+    `;
+  }
+
+  function renderCertificationHeader(name: string, isCompleted: boolean): string {
+    const icon = isCompleted ? mergedConfig.icons.certification : mergedConfig.icons.certificationInProgress;
+    const status = isCompleted 
+      ? `<span style="color: ${mergedConfig.colors.success}"> (${mergedConfig.text.completed})</span>`
+      : '';
+    return `<h3 style="${styles.certHeader}">${icon} ${name}${status}</h3>`;
+  }
+
+  function renderRemainingCourses(trackCourses: string[], courseMap: Map<string, CourseData>): string {
+    const certCourses = new Set(Object.keys(certifications)
+      .flatMap(certName => getCertificationCourses(certName as CertificationName, state.selectedTrack))
+    );
+    
+    const remainingCourses = trackCourses.filter(id => !certCourses.has(id));
+    if (!remainingCourses.length) return '';
+
+    return `
+      <div style="${styles.group}">
+        <ul style="${styles.list}">
+          ${remainingCourses.map(courseId => renderCourseItem(courseId, courseMap)).join('')}
+        </ul>
+      </div>
+    `;
+  }
+
+  function renderCourseItem(courseId: string, courseMap: Map<string, CourseData>): string {
+    const courseData = courseMap.get(courseId);
+    const courseInfo = courses[courseId];
+    const { text: statusText, style: statusStyle } = getCourseStatus(courseData);
+    return templates.courseItem(courseInfo.title, buildCourseUrl(courseId), statusText, statusStyle);
+  }
+
+  function attachControls() {
+    document.getElementById('dropdown-container')?.appendChild(trackSelect);
     document.getElementById('test-close-btn')!.onclick = () => widget.remove();
   }
 
-  // Fetch user's course progress
-  fetch('https://graphql.api.apollographql.com/api/graphql', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({
-      query: `query GetUser {
-        me {
-          ... on User {
-            ...User
-            __typename
-          }
-          __typename
-        }
-      }
+  async function fetchUserProgress() {
+    try {
+      const response = await fetch('https://graphql.api.apollographql.com/api/graphql', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ query: GET_USER_PROGRESS })
+      });
       
-      fragment User on User {
-        id
-        fullName
-        email
-        courses: odysseyCourses {
-          ...Course
-          __typename
-        }
-        __typename
-      }
-      
-      fragment Course on OdysseyCourse {
-        id
-        completedAt
-        enrolledAt
-        __typename
-      }`
-    })
-  })
-  .then(response => response.json())
-  .then(data => {
-    const userCourses = data?.data?.me?.courses || [];
-
-    // Set initial selected value
-    trackSelect.value = initialTrack;
-
-    // Store selection when changed
-    trackSelect.addEventListener('change', () => {
-      try {
-        localStorage.setItem('apollo-odyssey-selected-track', trackSelect.value);
-      } catch {
-        // Silently fail if storage is not available
-      }
-      renderTrackCourses(trackSelect.value as TrackName, userCourses);
-    });
-
-    // Initial render
-    renderTrackCourses(initialTrack, userCourses);
-  })
-  .catch(() => {
-    widget.innerHTML = `
-      <strong style="${styles.header}">${mergedConfig.icons.notStarted} ${mergedConfig.text.error}</strong>
-      <p style="margin-top: 10px;">${mergedConfig.text.loginPrompt} 
-        <a href="https://www.apollographql.com/tutorials/" style="${styles.link}">apollographql.com</a>
-      </p>
-    `;
-  });
+      const data = await response.json();
+      state.userCourses = data?.data?.me?.courses || [];
+      state.isLoading = false;
+      renderTrackCourses();
+    } catch {
+      widget.innerHTML = templates.loginPrompt();
+    }
+  }
 }
 
-// Safely initialize widget
-try {
-  if (typeof window !== 'undefined') {
+if (typeof window !== 'undefined') {
+  try {
     createWidget();
+  } catch (error) {
+    console.error('Failed to initialize widget:', error);
   }
-} catch (error) {
-  console.error('Failed to initialize widget:', error);
 } 
