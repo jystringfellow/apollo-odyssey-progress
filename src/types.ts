@@ -36,11 +36,17 @@ export interface CourseStatus {
   style: string;
 }
 
+export interface CachedData {
+  timestamp: number;
+  courses: CourseData[];
+}
+
 export interface WidgetState {
   selectedTrack: TrackName;
   userCourses: CourseData[];
   isLoading: boolean;
   error?: string;
+  lastUpdated?: Date;
 }
 
 export type TrackName = string;

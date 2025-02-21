@@ -33,6 +33,21 @@ export function createTemplates(config: WidgetConfig) {
           apollographql.com
         </a>
       </p>
+    `,
+
+    refreshButton: (isLoading: boolean, lastUpdated?: Date) => `
+      <button 
+        id="refresh-btn"
+        style="${styles.refreshButton}"
+        ${isLoading ? 'disabled' : ''}
+      >
+        ${isLoading ? '🔄 Refreshing...' : '🔄 Refresh'}
+        ${lastUpdated ? `
+          <span style="font-size: 12px; opacity: 0.7;">
+            Updated ${lastUpdated.toLocaleTimeString()}
+          </span>
+        ` : ''}
+      </button>
     `
   };
 } 

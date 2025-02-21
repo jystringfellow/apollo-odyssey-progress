@@ -8,25 +8,29 @@ import {
   CertificationName, 
   CourseData, 
   WidgetState,
-  CourseStatus 
+  CourseStatus,
+  CachedData
 } from './types';
 
 export function createWidget(customConfig = {}) {
   const mergedConfig = { ...config, ...customConfig };
   const styles = createStyles(mergedConfig);
   const templates = createTemplates(mergedConfig);
+  const CACHE_KEY = 'apollo-odyssey-progress';
+  const CACHE_TTL = 1000 * 60 * 5; // 5 minutes
 
   const state: WidgetState = {
     selectedTrack: getInitialTrack(),
     userCourses: [],
     isLoading: true,
-    error: undefined
+    error: undefined,
+    lastUpdated: undefined
   };
 
   const widget = initializeWidget();
   const trackSelect = createTrackSelector();
   setupWidgetEventHandlers(widget);
-  fetchUserProgress();
+  refreshProgress();
 
   function getInitialTrack(): TrackName {
     const availableTracks = getAvailableTracks();
@@ -129,6 +133,65 @@ export function createWidget(customConfig = {}) {
     return `https://www.apollographql.com/tutorials/${courseId.replace('/v2', '')}`;
   }
 
+  function getCachedProgress(): CachedData | null {
+    try {
+      const cached = localStorage.getItem(CACHE_KEY);
+      if (!cached) return null;
+      
+      const data = JSON.parse(cached) as CachedData;
+      const age = Date.now() - data.timestamp;
+      
+      return age < CACHE_TTL ? data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function cacheProgress(courses: CourseData[]) {
+    try {
+      const data: CachedData = {
+        timestamp: Date.now(),
+        courses
+      };
+      localStorage.setItem(CACHE_KEY, JSON.stringify(data));
+    } catch {}
+  }
+
+  async function refreshProgress(force = false) {
+    if (!force) {
+      const cached = getCachedProgress();
+      if (cached) {
+        state.userCourses = cached.courses;
+        state.lastUpdated = new Date(cached.timestamp);
+        state.isLoading = false;
+        renderTrackCourses();
+        return;
+      }
+    }
+
+    state.isLoading = true;
+    renderTrackCourses();
+
+    try {
+      const response = await fetch('https://graphql.api.apollographql.com/api/graphql', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ query: GET_USER_PROGRESS })
+      });
+      
+      const data = await response.json();
+      state.userCourses = data?.data?.me?.courses || [];
+      state.lastUpdated = new Date();
+      state.isLoading = false;
+      
+      cacheProgress(state.userCourses);
+      renderTrackCourses();
+    } catch {
+      widget.innerHTML = templates.loginPrompt();
+    }
+  }
+
   function renderTrackCourses() {
     const trackCourses = getCoursesByTrack(state.selectedTrack);
     const courseMap = new Map(state.userCourses.map(course => [course.id, course]));
@@ -143,10 +206,15 @@ export function createWidget(customConfig = {}) {
 
     widget.innerHTML = `
       <div style="${styles.container}${isCompleted ? styles.completed : ''}">
-        ${templates.trackHeader(isCompleted, trackStatus)}
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          ${templates.trackHeader(isCompleted, trackStatus)}
+          ${templates.refreshButton(state.isLoading, state.lastUpdated)}
+        </div>
         <div id="dropdown-container"></div>
-        ${certificationSections}
-        ${remainingCoursesSection}
+        ${state.isLoading ? templates.loading : `
+          ${certificationSections}
+          ${remainingCoursesSection}
+        `}
         <div style="${styles.buttonContainer}">
           <button id="test-close-btn" style="${styles.closeButton}">Close</button>
         </div>
@@ -220,24 +288,7 @@ export function createWidget(customConfig = {}) {
   function attachControls() {
     document.getElementById('dropdown-container')?.appendChild(trackSelect);
     document.getElementById('test-close-btn')!.onclick = () => widget.remove();
-  }
-
-  async function fetchUserProgress() {
-    try {
-      const response = await fetch('https://graphql.api.apollographql.com/api/graphql', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ query: GET_USER_PROGRESS })
-      });
-      
-      const data = await response.json();
-      state.userCourses = data?.data?.me?.courses || [];
-      state.isLoading = false;
-      renderTrackCourses();
-    } catch {
-      widget.innerHTML = templates.loginPrompt();
-    }
+    document.getElementById('refresh-btn')?.addEventListener('click', () => refreshProgress(true));
   }
 }
 

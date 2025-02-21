@@ -113,6 +113,25 @@ export function createStyles(config: any) {
     completed: `
       background: ${config.colors.success}15;
       border: 1px solid ${config.colors.success};
+    `,
+    refreshButton: `
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 8px;
+      color: ${config.colors.text};
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      opacity: 0.8;
+      transition: opacity 0.2s;
+      &:hover {
+        opacity: 1;
+      }
+      &:disabled {
+        cursor: not-allowed;
+        opacity: 0.5;
+      }
     `
   };
 } 
