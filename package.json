@@ -1,0 +1,15 @@
+{
+  "name": "apollo-odyssey-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "dev": "node scripts/build.js --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "esbuild": "^0.20.1",
+    "typescript": "^5.3.3"
+  }
+}
